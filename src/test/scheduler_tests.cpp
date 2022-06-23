@@ -7,7 +7,6 @@
 
 #include <test/test_bitcoin.h>
 
-#include <boost/bind.hpp>
 #include <boost/thread.hpp>
 #include <boost/test/unit_test.hpp>
 
