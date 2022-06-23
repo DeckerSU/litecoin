@@ -25,14 +25,14 @@ EOL
     fi
     cd db-4.8.30.NC/build_unix/
     ../dist/configure -enable-cxx -disable-shared -with-pic -prefix=$LTC_PREFIX
-    make install
+    make -j$(nproc --all) install
     cd $LTC_ROOT
 }
 buildLTC () {
     git pull
     ./autogen.sh
-    ./configure LDFLAGS="-L${LTC_PREFIX}/lib/" CPPFLAGS="-I${LTC_PREFIX}/include/" --with-gui=no --disable-tests --disable-bench --without-miniupnpc --enable-experimental-asm --enable-static --disable-shared --with-incompatible-bdb
-    make -j$(nproc)
+    ./configure LDFLAGS="-L${LTC_PREFIX}/lib/" CPPFLAGS="-I${LTC_PREFIX}/include/" --with-gui=no --disable-tests --disable-bench --without-miniupnpc --enable-experimental-asm --enable-static --disable-shared
+    make -j$(nproc --all)
 }
 berkeleydb
 buildLTC
