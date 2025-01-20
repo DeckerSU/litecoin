@@ -4726,6 +4726,141 @@ static RPCHelpMan upgradewallet()
     };
 }
 
+static RPCHelpMan cleanwallettransactions()
+{
+    return RPCHelpMan{
+        "cleanwallettransactions",
+        "\nRemoves \"old\" or \"spent\" transactions from the wallet.\n"
+        "If a single txid is provided, only that transaction is retained.\n"
+        "If no txid is provided, automatically remove older transactions.\n",
+        {
+            {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED_NAMED_ARG, "The transaction id to retain (leave empty to auto-clean)."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::NUM, "total_transactions", "The total number of transactions in the wallet before cleaning."},
+                {RPCResult::Type::NUM, "remaining_transactions", "The number of remaining transactions after cleaning."},
+                {RPCResult::Type::NUM, "removed_transactions", "The number of removed transactions."},
+            }
+        },
+        RPCExamples{
+            HelpExampleCli("cleanwallettransactions", "\"027e3758c3a65b12aa1046462b486d0a63bfa1beae327897f56c5cfb7daaae71\"") +
+            HelpExampleRpc("cleanwallettransactions", "\"027e3758c3a65b12aa1046462b486d0a63bfa1beae327897f56c5cfb7daaae71\"")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        {
+            std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
+            if (!wallet) {
+                return NullUniValue;
+            }
+            CWallet* const pwallet = wallet.get();
+
+            pwallet->BlockUntilSyncedToCurrentChain();
+
+            LOCK(pwallet->cs_wallet);
+
+            std::vector<uint256> txidsToRemove;
+
+            if (request.params.size() > 1) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                   "cleanwallettransactions only accepts zero or one parameter (txid).");
+            }
+
+            bool hasTxidParam = (request.params.size() == 1);
+            uint256 keepTxid;
+
+            if (hasTxidParam) {
+                keepTxid = ParseHashV(request.params[0], "txid");
+                if (!pwallet->mapWallet.count(keepTxid)) {
+                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                                       "Invalid or non-wallet transaction id: " + keepTxid.ToString());
+                }
+            }
+
+            if (hasTxidParam) {
+                for (const auto& walletEntry : pwallet->mapWallet) {
+                    const uint256& wtxid = walletEntry.first;
+                    if (wtxid != keepTxid) {
+                        txidsToRemove.push_back(wtxid);
+                    }
+                }
+            } else {
+                std::vector<COutputCoin> vecOutputs;
+                bool include_unsafe = true;
+                int nMinDepth = 1;
+                int nMaxDepth = 9999999;
+
+                CAmount nMinimumAmount    = 0;
+                CAmount nMaximumAmount    = MAX_MONEY;
+                CAmount nMinimumSumAmount = MAX_MONEY;
+                uint64_t nMaximumCount    = 0;
+
+                CCoinControl coinControl;
+                coinControl.m_avoid_address_reuse = false;
+                coinControl.m_min_depth = nMinDepth;
+                coinControl.m_max_depth = nMaxDepth;
+
+                pwallet->AvailableCoins(
+                    vecOutputs,
+                    !include_unsafe,
+                    &coinControl,
+                    nMinimumAmount,
+                    nMaximumAmount,
+                    nMinimumSumAmount,
+                    nMaximumCount
+                );
+
+                int maxUnspentDepth = 0;
+                for (const auto& outputCoin : vecOutputs) {
+                    if (outputCoin.IsMWEB()) {
+                        continue;
+                    }
+                    CTxDestination address;
+                    bool fValidAddress = outputCoin.GetDestination(address);
+                    if (!fValidAddress) {
+                        continue;
+                    }
+                    const COutput& out = boost::get<COutput>(outputCoin.m_output);
+                    if (out.nDepth > maxUnspentDepth) {
+                        maxUnspentDepth = out.nDepth;
+                    }
+                }
+
+                maxUnspentDepth += 1;
+
+                for (const auto& walletEntry : pwallet->mapWallet) {
+                    const uint256& wtxid = walletEntry.first;
+                    const CWalletTx& wtx = walletEntry.second;
+                    if (wtx.GetDepthInMainChain() > maxUnspentDepth) {
+                        txidsToRemove.push_back(wtxid);
+                    }
+                }
+            }
+
+            std::vector<uint256> vHashOut;
+            DBErrors zapResult = pwallet->ZapSelectTx(txidsToRemove, vHashOut);
+            if (zapResult == DBErrors::LOAD_OK) {
+                for (const auto& removedHash : vHashOut) {
+                    LogPrintf("Erased %s from wallet.\n", removedHash.ToString());
+                }
+            }
+
+            UniValue ret(UniValue::VOBJ);
+            int totalBefore   = static_cast<int>(pwallet->mapWallet.size() + vHashOut.size());
+            int totalAfter    = static_cast<int>(pwallet->mapWallet.size());
+            int removedCount  = static_cast<int>(vHashOut.size());
+
+            ret.pushKV("total_transactions", totalBefore);
+            ret.pushKV("remaining_transactions", totalAfter);
+            ret.pushKV("removed_transactions", removedCount);
+
+            return ret;
+        }
+    };
+}
+
+
 RPCHelpMan abortrescan();
 RPCHelpMan dumpprivkey();
 RPCHelpMan importprivkey();
@@ -4752,6 +4887,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "bumpfee",                          &bumpfee,                       {"txid", "options"} },
     { "wallet",             "psbtbumpfee",                      &psbtbumpfee,                   {"txid", "options"} },
     { "wallet",             "createwallet",                     &createwallet,                  {"wallet_name", "disable_private_keys", "blank", "passphrase", "avoid_reuse", "descriptors", "load_on_startup"} },
+    { "wallet",             "cleanwallettransactions",          &cleanwallettransactions,       {"txid"} },
     { "wallet",             "dumpprivkey",                      &dumpprivkey,                   {"address"}  },
     { "wallet",             "dumpwallet",                       &dumpwallet,                    {"filename"} },
     { "wallet",             "encryptwallet",                    &encryptwallet,                 {"passphrase"} },
